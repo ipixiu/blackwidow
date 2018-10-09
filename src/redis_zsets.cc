@@ -5,9 +5,13 @@
 
 #include "src/redis_zsets.h"
 
-#include <limits>
+#include <inttypes.h>
 
-#include "iostream"
+#include <limits>
+#include <iostream>
+
+#include "slash/include/slash_string.h"
+
 #include "blackwidow/util.h"
 #include "src/zsets_filter.h"
 #include "src/scope_record_lock.h"
@@ -334,7 +338,7 @@ Status RedisZSets::ZIncrby(const Slice& key,
                            double increment,
                            double* ret) {
   *ret = 0;
-  double score = 0; 
+  double score = 0;
   char score_buf[8];
   int32_t version = 0;
   std::string meta_value;
@@ -384,6 +388,80 @@ Status RedisZSets::ZIncrby(const Slice& key,
   batch.Put(handles_[2], zsets_score_key.Encode(), Slice());
   *ret = score;
   return db_->Write(default_write_options_, &batch);
+}
+
+Status RedisZSets::ZRangeLimit(const Slice& key,
+            const Slice& member,
+            int64_t number,
+            int64_t flag,
+            std::vector<ScoreMember>* score_members) {
+  score_members->clear();
+  std::string meta_value;
+  ScopeRecordLock l(lock_mgr_, key);
+  Status s = db_->Get(default_read_options_, handles_[0], key, &meta_value);
+  if (s.ok()) {
+    ParsedZSetsMetaValue parsed_zsets_meta_value(&meta_value);
+    if (parsed_zsets_meta_value.IsStale()) {
+      return Status::NotFound("Stale");
+    } else if (parsed_zsets_meta_value.count() == 0) {
+      return Status::NotFound();
+    } else {
+      int32_t version = parsed_zsets_meta_value.version();
+      int32_t index = 0;
+      int32_t stop_index = parsed_zsets_meta_value.count() - 1;
+
+      int64_t start_idx;
+      slash::string2l(member.data(), member.size(), (long*)(&start_idx));
+
+      rocksdb::WriteBatch batch;
+
+      ScoreMember score_member;
+      ZSetsScoreKey zsets_score_key(key, version, std::numeric_limits<double>::lowest(), Slice());
+      rocksdb::Iterator* iter = db_->NewIterator(default_read_options_, handles_[2]);
+      int32_t del_cnt = 0;
+      for (iter->Seek(zsets_score_key.Encode());
+           iter->Valid() && index <= stop_index;
+           iter->Next(), ++index) {
+
+        ParsedZSetsScoreKey parsed_zsets_score_key(iter->key());
+        int64_t memberIndex = strtoll(parsed_zsets_score_key.member().data_, (char**)NULL, 10);
+        if (memberIndex < start_idx) {
+          continue;
+        }
+
+        score_member.member = parsed_zsets_score_key.member().ToString();
+        int64_t idx;
+        slash::string2l(score_member.member.data(), score_member.member.size(), (long*)(&idx));
+        if (idx < start_idx) {
+          if (flag) {
+            ZSetsMemberKey member_key(key, version, score_member.member);
+            batch.Delete(handles_[1], member_key.Encode());
+
+            ZSetsScoreKey score_key(key, version, parsed_zsets_score_key.score(), score_member.member);
+            batch.Delete(handles_[2], score_key.Encode());
+
+            del_cnt ++;
+          }
+          continue;
+        }
+
+        score_member.score = parsed_zsets_score_key.score();
+        score_members->push_back(score_member);
+        if ((size_t)(number) < score_members->size()) {
+          break;
+        }
+      }
+      delete iter;
+
+      if (del_cnt) {
+        parsed_zsets_meta_value.ModifyCount(-del_cnt);
+        batch.Put(handles_[0], key, meta_value);
+        return db_->Write(default_write_options_, &batch);
+      }
+    }
+  }
+
+  return s;
 }
 
 Status RedisZSets::ZRange(const Slice& key,
@@ -1115,9 +1193,9 @@ Status RedisZSets::ZRangebylex(const Slice& key,
 
   bool left_no_limit = !min.compare("-");
   bool right_not_limit = !max.compare("+");
-  
+
   Status s = db_->Get(read_options, handles_[0], key, &meta_value);
-  if (s.ok()) { 
+  if (s.ok()) {
     ParsedZSetsMetaValue parsed_zsets_meta_value(&meta_value);
     if (parsed_zsets_meta_value.IsStale()
       || parsed_zsets_meta_value.count() == 0) {
@@ -1154,7 +1232,7 @@ Status RedisZSets::ZRangebylex(const Slice& key,
       }
       delete iter;
     }
-  } 
+  }
   return s;
 }
 
@@ -1187,11 +1265,11 @@ Status RedisZSets::ZRemrangebylex(const Slice& key,
 
   bool left_no_limit = !min.compare("-");
   bool right_not_limit = !max.compare("+");
-  
+
   int32_t del_cnt = 0;
   std::string meta_value;
   Status s = db_->Get(read_options, handles_[0], key, &meta_value);
-  if (s.ok()) { 
+  if (s.ok()) {
     ParsedZSetsMetaValue parsed_zsets_meta_value(&meta_value);
     if (parsed_zsets_meta_value.IsStale()
       || parsed_zsets_meta_value.count() == 0) {
