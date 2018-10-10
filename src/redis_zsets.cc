@@ -391,10 +391,18 @@ Status RedisZSets::ZIncrby(const Slice& key,
 }
 
 Status RedisZSets::ZRangeLimit(const Slice& key,
-            const Slice& member,
-            int64_t number,
-            int64_t flag,
+            int32_t start,
+            int32_t number,
+            int32_t flag,
             std::vector<ScoreMember>* score_members) {
+  if (start < 0) {
+    return Status::InvalidArgument("@start should be not less than 0");
+  }
+
+  if (number <= 0) {
+    return Status::InvalidArgument("@number should be greater than 0");
+  }
+
   score_members->clear();
   std::string meta_value;
   ScopeRecordLock l(lock_mgr_, key);
@@ -410,11 +418,7 @@ Status RedisZSets::ZRangeLimit(const Slice& key,
       int32_t index = 0;
       int32_t stop_index = parsed_zsets_meta_value.count() - 1;
 
-      int64_t start_idx;
-      slash::string2l(member.data(), member.size(), (long*)(&start_idx));
-
       rocksdb::WriteBatch batch;
-
       ScoreMember score_member;
       ZSetsScoreKey zsets_score_key(key, version, std::numeric_limits<double>::lowest(), Slice());
       rocksdb::Iterator* iter = db_->NewIterator(default_read_options_, handles_[2]);
@@ -424,15 +428,11 @@ Status RedisZSets::ZRangeLimit(const Slice& key,
            iter->Next(), ++index) {
 
         ParsedZSetsScoreKey parsed_zsets_score_key(iter->key());
-        int64_t memberIndex = strtoll(parsed_zsets_score_key.member().data_, (char**)NULL, 10);
-        if (memberIndex < start_idx) {
-          continue;
-        }
 
         score_member.member = parsed_zsets_score_key.member().ToString();
         int64_t idx;
         slash::string2l(score_member.member.data(), score_member.member.size(), (long*)(&idx));
-        if (idx < start_idx) {
+        if (idx < start) {
           if (flag) {
             ZSetsMemberKey member_key(key, version, score_member.member);
             batch.Delete(handles_[1], member_key.Encode());
@@ -444,10 +444,13 @@ Status RedisZSets::ZRangeLimit(const Slice& key,
           }
           continue;
         }
+        if (start + number <= idx) {
+	      break;
+        }
 
         score_member.score = parsed_zsets_score_key.score();
         score_members->push_back(score_member);
-        if ((size_t)(number) < score_members->size()) {
+        if ((size_t)(number) <= score_members->size()) {
           break;
         }
       }

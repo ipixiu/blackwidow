@@ -690,6 +690,12 @@ class BlackWidow {
                 int32_t stop,
                 std::vector<ScoreMember>* score_members);
 
+  Status ZRangeLimit(const Slice& key,
+                int32_t start,
+                int32_t number,
+                int32_t flag,
+                std::vector<ScoreMember>* score_members);
+
   // Returns all the elements in the sorted set at key with a score between min
   // and max (including elements with score equal to min or max). The elements
   // are considered to be ordered from low to high scores.

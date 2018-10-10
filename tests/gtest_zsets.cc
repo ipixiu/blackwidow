@@ -3,6 +3,8 @@
 //  LICENSE file in the root directory of this source tree. An additional grant
 //  of patent rights can be found in the PATENTS file in the same directory.
 
+#include <stdlib.h>
+
 #include <gtest/gtest.h>
 #include <thread>
 #include <iostream>
@@ -27,13 +29,31 @@ class ZSetsTest : public ::testing::Test {
   }
   virtual ~ZSetsTest() { }
 
-  static void SetUpTestCase() { }
-  static void TearDownTestCase() { }
+  static void SetUpTestCase();
+  static void TearDownTestCase();
 
   BlackwidowOptions bw_options;
   blackwidow::BlackWidow db;
   blackwidow::Status s;
 };
+
+void ZSetsTest::SetUpTestCase() {
+  char command[32];
+  sprintf(command, "rm -rf %s", "./db/zsets");
+  int ret = system(command);
+  if (ret) {
+  	printf("command:%s, error:%m\n", command);
+  }
+}
+
+void ZSetsTest::TearDownTestCase() {
+  char command[32];
+  sprintf(command, "rm -rf %s", "./db/zsets");
+  int ret = system(command);
+  if (ret) {
+  	printf("command:%s, error:%m\n", command);
+  }
+}
 
 static bool members_match(const std::vector<std::string>& mm_out,
                           const std::vector<std::string>& expect_members) {
@@ -96,6 +116,7 @@ static bool size_match(blackwidow::BlackWidow *const db,
   if (s.IsNotFound() && !expect_size) {
     return true;
   }
+
   return size == expect_size;
 }
 
@@ -887,6 +908,73 @@ TEST_F(ZSetsTest, ZRangeTest) {
   s = db.ZRange("GP4_ZRANGE_KEY", 0, -1, &score_members);
   ASSERT_TRUE(s.IsNotFound());
   ASSERT_TRUE(score_members_match(score_members, {}));
+}
+
+// ZRangeLimit
+TEST_F(ZSetsTest, ZRangeLimitTest) {
+  delete_key(&db, "GP1_ZRANGE_KEY");
+
+  int32_t ret;
+  std::vector<blackwidow::ScoreMember> score_members;
+
+  // ***************** Group 1 Test *****************
+  std::vector<blackwidow::ScoreMember> gp1_sm {{0, "0"}};
+  s = db.ZAdd("GP1_ZRANGE_KEY", gp1_sm, &ret);
+  ASSERT_TRUE(s.ok());
+  ASSERT_EQ(1, ret);
+  ASSERT_TRUE(size_match(&db, "GP1_ZRANGE_KEY", 1));
+  ASSERT_TRUE(score_members_match(&db, "GP1_ZRANGE_KEY", {{0, "0"}}));
+
+  s = db.ZRangeLimit("GP1_ZRANGE_KEY", 0, 3, 1, &score_members);
+  ASSERT_TRUE(s.ok());
+  ASSERT_TRUE(score_members_match(score_members, {{0, "0"}}));
+  ASSERT_TRUE(size_match(&db, "GP1_ZRANGE_KEY", 1));
+
+  s = db.ZRangeLimit("GP1_ZRANGE_KEY", 1, 3, 1, &score_members);
+  ASSERT_TRUE(s.ok());
+  ASSERT_TRUE(score_members_match(score_members, {}));
+  ASSERT_TRUE(size_match(&db, "GP1_ZRANGE_KEY", 0));
+
+  // ***************** Group 2 Test *****************
+  // {0, 0} {1, 1} {2, 2} {3, 3} {4, 4} {5, 5} {6, 6} {7, 7} {8, 8}
+  //    0     1      2      3      4      5      6      7      8
+  //   -9    -8     -7     -6     -5     -4     -3     -2     -1
+  std::vector<blackwidow::ScoreMember> gp2_sm {{0, "0"}, {1, "1"}, {2, "2"},
+                                               {3, "3"}, {4, "4"}, {5, "5"},
+                                               {6, "6"}, {7, "7"}, {8, "8"}};
+  s = db.ZAdd("GP1_ZRANGE_KEY", gp2_sm, &ret);
+  ASSERT_TRUE(s.ok());
+  ASSERT_EQ(9, ret);
+  ASSERT_TRUE(size_match(&db, "GP1_ZRANGE_KEY", 9));
+  ASSERT_TRUE(score_members_match(&db, "GP1_ZRANGE_KEY", {{0, "0"}, {1, "1"}, {2, "2"},
+                                                          {3, "3"}, {4, "4"}, {5, "5"},
+                                                          {6, "6"}, {7, "7"}, {8, "8"}}));
+
+  s = db.ZRangeLimit("GP1_ZRANGE_KEY", 0, 3, 0, &score_members);
+  ASSERT_TRUE(s.ok());
+  ASSERT_TRUE(score_members_match(score_members, {{0, "0"}, {1, "1"}, {2, "2"}}));
+  ASSERT_TRUE(size_match(&db, "GP1_ZRANGE_KEY", 9));
+
+  s = db.ZRangeLimit("GP1_ZRANGE_KEY", 1, 3, 1, &score_members);
+  ASSERT_TRUE(s.ok());
+  ASSERT_TRUE(score_members_match(score_members, {{1, "1"}, {2, "2"}, {3, "3"}}));
+  ASSERT_TRUE(size_match(&db, "GP1_ZRANGE_KEY", 8));
+
+  s = db.ZRangeLimit("GP1_ZRANGE_KEY", 0, 3, 1, &score_members);
+  ASSERT_TRUE(s.ok());
+  ASSERT_TRUE(score_members_match(score_members, {{1, "1"}, {2, "2"}}));
+  ASSERT_TRUE(size_match(&db, "GP1_ZRANGE_KEY", 8));
+
+  s = db.ZRangeLimit("GP1_ZRANGE_KEY", 7, 3, 1, &score_members);
+  ASSERT_TRUE(s.ok());
+  ASSERT_TRUE(score_members_match(score_members, {{7, "7"}, {8, "8"}}));
+  ASSERT_TRUE(size_match(&db, "GP1_ZRANGE_KEY", 2));
+
+  s = db.ZRangeLimit("GP1_ZRANGE_KEY", -1, 3, 0, &score_members);
+  ASSERT_TRUE(!s.ok());
+
+  s = db.ZRangeLimit("GP1_ZRANGE_KEY", 1, 0, 0, &score_members);
+  ASSERT_TRUE(!s.ok());
 }
 
 // ZRangebyscore
@@ -4286,8 +4374,8 @@ TEST_F(ZSetsTest, ZScanTest) {
   ASSERT_TRUE(score_members_match(score_member_out, {}));
 }
 
-
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }
+

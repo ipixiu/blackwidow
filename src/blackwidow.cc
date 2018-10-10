@@ -534,6 +534,14 @@ Status BlackWidow::ZRange(const Slice& key,
   return zsets_db_->ZRange(key, start, stop, score_members);
 }
 
+Status BlackWidow::ZRangeLimit(const Slice& key,
+                int32_t start,
+                int32_t number,
+                int32_t flag,
+                std::vector<ScoreMember>* score_members) {
+  return zsets_db_->ZRangeLimit(key, start, number, flag, score_members);
+}
+
 Status BlackWidow::ZRangebyscore(const Slice& key,
                                  double min,
                                  double max,

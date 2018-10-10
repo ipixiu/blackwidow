@@ -30,10 +30,10 @@ class RedisZSets : public Redis {
 
     // ZSets Commands
     Status ZRangeLimit(const Slice& key,
-                const Slice& member,
-                int64_t number,
-                int64_t flag,
-                std::vector<ScoreMember>* score_members);
+               int32_t start,
+               int32_t number,
+               int32_t flag,
+               std::vector<ScoreMember>* score_members);
 
     Status ZAdd(const Slice& key,
                 const std::vector<ScoreMember>& score_members,
