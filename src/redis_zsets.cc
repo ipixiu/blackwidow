@@ -444,9 +444,9 @@ Status RedisZSets::ZRangeLimit(const Slice& key,
           }
           continue;
         }
-        if (start + number <= idx) {
-	      break;
-        }
+        // if (start + number <= idx) {
+	    //   break;
+        // }
 
         score_member.score = parsed_zsets_score_key.score();
         score_members->push_back(score_member);
