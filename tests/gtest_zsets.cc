@@ -142,6 +142,8 @@ static bool delete_key(blackwidow::BlackWidow *const db,
 // ZAdd
 TEST_F(ZSetsTest, ZAddTest) {
   int32_t ret;
+  std::map<DataType, int64_t> type_ttl;
+  std::map<blackwidow::DataType, rocksdb::Status> type_status;
 
   // ***************** Group 1 Test *****************
   std::vector<blackwidow::ScoreMember> gp1_sm {{3.23, "MM1"}, {0, "MM2"}, {8.0004, "MM3"}, {-0.54, "MM4"}};
@@ -371,6 +373,40 @@ TEST_F(ZSetsTest, ZAddTest) {
   ASSERT_EQ(0, ret);
   ASSERT_TRUE(size_match(&db, "GP7_ZADD_KEY", 3));
   ASSERT_TRUE(score_members_match(&db, "GP7_ZADD_KEY", {{0, "MM2"}, {1234.56789, "MM1"}, {1234.56789, "MM3"}}));
+
+
+  // ***************** Group 8 Test *****************
+  std::vector<blackwidow::ScoreMember> gp8_sm1 {{1, "MM1"}};
+  std::vector<blackwidow::ScoreMember> gp8_sm2 {{2, "MM2"}};
+  s = db.ZAdd("GP8_ZADD_KEY", gp8_sm1, &ret);
+  ASSERT_TRUE(s.ok());
+  ASSERT_EQ(1, ret);
+  ASSERT_TRUE(size_match(&db, "GP8_ZADD_KEY", 1));
+  ASSERT_TRUE(score_members_match(&db, "GP8_ZADD_KEY", {{1, "MM1"}}));
+
+  type_status.clear();
+  ret = db.Expire("GP8_ZADD_KEY", 100, &type_status);
+  ASSERT_EQ(ret, 1);
+  ASSERT_TRUE(type_status[blackwidow::DataType::kZSets].ok());
+
+  type_status.clear();
+  type_ttl = db.TTL("GP8_ZADD_KEY", &type_status);
+  ASSERT_LE(type_ttl[kZSets], 100);
+  ASSERT_GE(type_ttl[kZSets], 0);
+
+  s = db.ZRem("GP8_ZADD_KEY", {"MM1"}, &ret);
+  ASSERT_TRUE(s.ok());
+  ASSERT_EQ(ret, 1);
+
+  s = db.ZAdd("GP8_ZADD_KEY", gp8_sm2, &ret);
+  ASSERT_TRUE(s.ok());
+  ASSERT_EQ(1, ret);
+  ASSERT_TRUE(size_match(&db, "GP8_ZADD_KEY", 1));
+  ASSERT_TRUE(score_members_match(&db, "GP8_ZADD_KEY", {{2, "MM2"}}));
+
+  type_status.clear();
+  type_ttl = db.TTL("GP8_ZADD_KEY", &type_status);
+  ASSERT_EQ(type_ttl[kZSets], -1);
 }
 
 
@@ -616,6 +652,8 @@ TEST_F(ZSetsTest, ZCountTest) {
 TEST_F(ZSetsTest, ZIncrbyTest) {
   int32_t ret;
   double score;
+  std::map<DataType, int64_t> type_ttl;
+  std::map<blackwidow::DataType, rocksdb::Status> type_status;
 
   // ***************** Group 1 Test *****************
   std::vector<blackwidow::ScoreMember> gp1_sm {{101010.1010101, "MM1"}, {101010.0101010, "MM2"}};
@@ -718,6 +756,49 @@ TEST_F(ZSetsTest, ZIncrbyTest) {
   ASSERT_DOUBLE_EQ(score, 101010.010101);
   ASSERT_TRUE(size_match(&db, "GP4_ZINCRBY_KEY", 2));
   ASSERT_TRUE(score_members_match(&db, "GP4_ZINCRBY_KEY", {{-101010.010101, "MM1"}, {101010.010101, "MM2"}}));
+
+
+  // ***************** Group 5 Test *****************
+  s = db.ZAdd("GP5_ZINCRBY_KEY", {{1, "MM1"}}, &ret);
+  ASSERT_TRUE(s.ok());
+  ASSERT_EQ(ret, 1);
+  ASSERT_TRUE(make_expired(&db, "GP5_ZINCRBY_KEY"));
+
+  s = db.ZIncrby("GP5_ZINCRBY_KEY", "MM2", 2, &score);
+  ASSERT_TRUE(s.ok());
+  ASSERT_DOUBLE_EQ(score, 2);
+  ASSERT_TRUE(size_match(&db, "GP5_ZINCRBY_KEY", 1));
+  ASSERT_TRUE(score_members_match(&db, "GP5_ZINCRBY_KEY", {{2, "MM2"}}));
+
+
+  // ***************** Group 6 Test *****************
+  s = db.ZAdd("GP6_ZINCRBY_KEY", {{1, "MM1"}}, &ret);
+  ASSERT_TRUE(s.ok());
+  ASSERT_EQ(ret, 1);
+
+  type_status.clear();
+  ret = db.Expire("GP6_ZINCRBY_KEY", 100, &type_status);
+  ASSERT_EQ(ret, 1);
+  ASSERT_TRUE(type_status[blackwidow::DataType::kZSets].ok());
+
+  type_status.clear();
+  type_ttl = db.TTL("GP6_ZINCRBY_KEY", &type_status);
+  ASSERT_LE(type_ttl[kZSets], 100);
+  ASSERT_GE(type_ttl[kZSets], 0);
+
+  s = db.ZRem("GP6_ZINCRBY_KEY", {"MM1"}, &ret);
+  ASSERT_TRUE(s.ok());
+  ASSERT_EQ(ret, 1);
+
+  s = db.ZIncrby("GP6_ZINCRBY_KEY", "MM1", 1, &score);
+  ASSERT_TRUE(s.ok());
+  ASSERT_DOUBLE_EQ(score, 1);
+  ASSERT_TRUE(size_match(&db, "GP6_ZINCRBY_KEY", 1));
+  ASSERT_TRUE(score_members_match(&db, "GP6_ZINCRBY_KEY", {{1, "MM1"}}));
+
+  type_status.clear();
+  type_ttl = db.TTL("GP6_ZINCRBY_KEY", &type_status);
+  ASSERT_EQ(type_ttl[kZSets], -1);
 }
 
 // ZRange
@@ -2311,12 +2392,20 @@ TEST_F(ZSetsTest, ZRevrangeTest) {
   ASSERT_TRUE(s.ok());
   ASSERT_TRUE(score_members_match(score_members, {{0, "MM1"}}));
 
+  s = db.ZRevrange("GP1_ZREVRANGE_KEY", 0, 0, &score_members);
+  ASSERT_TRUE(s.ok());
+  ASSERT_TRUE(score_members_match(score_members, {{0, "MM1"}}));
+
+  s = db.ZRevrange("GP1_ZREVRANGE_KEY", -1, -1, &score_members);
+  ASSERT_TRUE(s.ok());
+  ASSERT_TRUE(score_members_match(score_members, {{0, "MM1"}}));
+
 
   // ***************** Group 2 Test *****************
   //
   // {0, MM0} {1, MM1} {2, MM2} {3, MM3} {4, MM4} {5, MM5} {6, MM6} {7, MM7} {8, MM8}
-  //    0        1        2        3        4        5        6        7        8
-  //   -9       -8       -7       -6       -5       -4       -3       -2       -1
+  //    8        7        6        5        4        3        2        1        0
+  //   -1       -2       -3       -4       -5       -6       -7       -8       -9
   std::vector<blackwidow::ScoreMember> gp2_sm {{0, "MM0"}, {1, "MM1"}, {2, "MM2"},
                                                {3, "MM3"}, {4, "MM4"}, {5, "MM5"},
                                                {6, "MM6"}, {7, "MM7"}, {8, "MM8"}};
@@ -2373,51 +2462,51 @@ TEST_F(ZSetsTest, ZRevrangeTest) {
 
   s = db.ZRevrange("GP2_ZREVRANGE_KEY", 0, 0, &score_members);
   ASSERT_TRUE(s.ok());
-  ASSERT_TRUE(score_members_match(score_members, {{0, "MM0"}}));
+  ASSERT_TRUE(score_members_match(score_members, {{8, "MM8"}}));
 
   s = db.ZRevrange("GP2_ZREVRANGE_KEY", -9, -9, &score_members);
   ASSERT_TRUE(s.ok());
-  ASSERT_TRUE(score_members_match(score_members, {{0, "MM0"}}));
+  ASSERT_TRUE(score_members_match(score_members, {{8, "MM8"}}));
 
   s = db.ZRevrange("GP2_ZREVRANGE_KEY", 8, 8, &score_members);
   ASSERT_TRUE(s.ok());
-  ASSERT_TRUE(score_members_match(score_members, {{8, "MM8"}}));
+  ASSERT_TRUE(score_members_match(score_members, {{0, "MM0"}}));
 
   s = db.ZRevrange("GP2_ZREVRANGE_KEY", -1, -1, &score_members);
   ASSERT_TRUE(s.ok());
-  ASSERT_TRUE(score_members_match(score_members, {{8, "MM8"}}));
+  ASSERT_TRUE(score_members_match(score_members, {{0, "MM0"}}));
 
   s = db.ZRevrange("GP2_ZREVRANGE_KEY", 0, 5, &score_members);
   ASSERT_TRUE(s.ok());
-  ASSERT_TRUE(score_members_match(score_members, {{5, "MM5"}, {4, "MM4"}, {3, "MM3"},
-                                                  {2, "MM2"}, {1, "MM1"}, {0, "MM0"}}));
+  ASSERT_TRUE(score_members_match(score_members, {{8, "MM8"}, {7, "MM7"}, {6, "MM6"},
+                                                  {5, "MM5"}, {4, "MM4"}, {3, "MM3"}}));
 
   s = db.ZRevrange("GP2_ZREVRANGE_KEY", 0, -4, &score_members);
   ASSERT_TRUE(s.ok());
-  ASSERT_TRUE(score_members_match(score_members, {{5, "MM5"}, {4, "MM4"}, {3, "MM3"},
-                                                  {2, "MM2"}, {1, "MM1"}, {0, "MM0"}}));
+  ASSERT_TRUE(score_members_match(score_members, {{8, "MM8"}, {7, "MM7"}, {6, "MM6"},
+                                                  {5, "MM5"}, {4, "MM4"}, {3, "MM3"}}));
 
   s = db.ZRevrange("GP2_ZREVRANGE_KEY", -9, -4, &score_members);
   ASSERT_TRUE(s.ok());
-  ASSERT_TRUE(score_members_match(score_members, {{5, "MM5"}, {4, "MM4"}, {3, "MM3"},
-                                                  {2, "MM2"}, {1, "MM1"}, {0, "MM0"}}));
+  ASSERT_TRUE(score_members_match(score_members, {{8, "MM8"}, {7, "MM7"}, {6, "MM6"},
+                                                  {5, "MM5"}, {4, "MM4"}, {3, "MM3"}}));
 
   s = db.ZRevrange("GP2_ZREVRANGE_KEY", -9, 5, &score_members);
   ASSERT_TRUE(s.ok());
-  ASSERT_TRUE(score_members_match(score_members, {{5, "MM5"}, {4, "MM4"}, {3, "MM3"},
-                                                  {2, "MM2"}, {1, "MM1"}, {0, "MM0"}}));
+  ASSERT_TRUE(score_members_match(score_members, {{8, "MM8"}, {7, "MM7"}, {6, "MM6"},
+                                                  {5, "MM5"}, {4, "MM4"}, {3, "MM3"}}));
 
 
   s = db.ZRevrange("GP2_ZREVRANGE_KEY", -100, 5, &score_members);
   ASSERT_TRUE(s.ok());
-  ASSERT_TRUE(score_members_match(score_members, {{5, "MM5"}, {4, "MM4"}, {3, "MM3"},
-                                                  {2, "MM2"}, {1, "MM1"}, {0, "MM0"}}));
+  ASSERT_TRUE(score_members_match(score_members, {{8, "MM8"}, {7, "MM7"}, {6, "MM6"},
+                                                  {5, "MM5"}, {4, "MM4"}, {3, "MM3"}}));
 
 
   s = db.ZRevrange("GP2_ZREVRANGE_KEY", -100, -4, &score_members);
   ASSERT_TRUE(s.ok());
-  ASSERT_TRUE(score_members_match(score_members, {{5, "MM5"}, {4, "MM4"}, {3, "MM3"},
-                                                  {2, "MM2"}, {1, "MM1"}, {0, "MM0"}}));
+  ASSERT_TRUE(score_members_match(score_members, {{8, "MM8"}, {7, "MM7"}, {6, "MM6"},
+                                                  {5, "MM5"}, {4, "MM4"}, {3, "MM3"}}));
 
 
   s = db.ZRevrange("GP2_ZREVRANGE_KEY", 3, 5, &score_members);
@@ -2438,51 +2527,79 @@ TEST_F(ZSetsTest, ZRevrangeTest) {
 
   s = db.ZRevrange("GP2_ZREVRANGE_KEY", 3, 8, &score_members);
   ASSERT_TRUE(s.ok());
-  ASSERT_TRUE(score_members_match(score_members, {{8, "MM8"}, {7, "MM7"}, {6, "MM6"},
-                                                  {5, "MM5"}, {4, "MM4"}, {3, "MM3"}}));
+  ASSERT_TRUE(score_members_match(score_members, {{5, "MM5"}, {4, "MM4"}, {3, "MM3"},
+                                                  {2, "MM2"}, {1, "MM1"}, {0, "MM0"}}));
 
   s = db.ZRevrange("GP2_ZREVRANGE_KEY", -6, -1, &score_members);
   ASSERT_TRUE(s.ok());
-  ASSERT_TRUE(score_members_match(score_members, {{8, "MM8"}, {7, "MM7"}, {6, "MM6"},
-                                                  {5, "MM5"}, {4, "MM4"}, {3, "MM3"}}));
+  ASSERT_TRUE(score_members_match(score_members, {{5, "MM5"}, {4, "MM4"}, {3, "MM3"},
+                                                  {2, "MM2"}, {1, "MM1"}, {0, "MM0"}}));
 
   s = db.ZRevrange("GP2_ZREVRANGE_KEY", 3, -1, &score_members);
   ASSERT_TRUE(s.ok());
-  ASSERT_TRUE(score_members_match(score_members, {{8, "MM8"}, {7, "MM7"}, {6, "MM6"},
-                                                  {5, "MM5"}, {4, "MM4"}, {3, "MM3"}}));
+  ASSERT_TRUE(score_members_match(score_members, {{5, "MM5"}, {4, "MM4"}, {3, "MM3"},
+                                                  {2, "MM2"}, {1, "MM1"}, {0, "MM0"}}));
 
   s = db.ZRevrange("GP2_ZREVRANGE_KEY", -6, 8, &score_members);
   ASSERT_TRUE(s.ok());
-  ASSERT_TRUE(score_members_match(score_members, {{8, "MM8"}, {7, "MM7"}, {6, "MM6"},
-                                                  {5, "MM5"}, {4, "MM4"}, {3, "MM3"}}));
+  ASSERT_TRUE(score_members_match(score_members, {{5, "MM5"}, {4, "MM4"}, {3, "MM3"},
+                                                  {2, "MM2"}, {1, "MM1"}, {0, "MM0"}}));
 
   s = db.ZRevrange("GP2_ZREVRANGE_KEY", -6, 100, &score_members);
   ASSERT_TRUE(s.ok());
-  ASSERT_TRUE(score_members_match(score_members, {{8, "MM8"}, {7, "MM7"}, {6, "MM6"},
-                                                  {5, "MM5"}, {4, "MM4"}, {3, "MM3"}}));
+  ASSERT_TRUE(score_members_match(score_members, {{5, "MM5"}, {4, "MM4"}, {3, "MM3"},
+                                                  {2, "MM2"}, {1, "MM1"}, {0, "MM0"}}));
 
   s = db.ZRevrange("GP2_ZREVRANGE_KEY", 3, 100, &score_members);
   ASSERT_TRUE(s.ok());
-  ASSERT_TRUE(score_members_match(score_members, {{8, "MM8"}, {7, "MM7"}, {6, "MM6"},
-                                                  {5, "MM5"}, {4, "MM4"}, {3, "MM3"}}));
+  ASSERT_TRUE(score_members_match(score_members, {{5, "MM5"}, {4, "MM4"}, {3, "MM3"},
+                                                  {2, "MM2"}, {1, "MM1"}, {0, "MM0"}}));
 
 
   // ***************** Group 3 Test *****************
-  std::vector<blackwidow::ScoreMember> gp3_sm {{0, "MM1"}};
-  s = db.ZAdd("GP3_ZREVRANGE_KEY", gp3_sm, &ret);
+  std::vector<blackwidow::ScoreMember> gp3_sm1 {{0, "MM0"}, {1, "MM1"}, {2, "MM2"}};
+  std::vector<blackwidow::ScoreMember> gp3_sm2 {{0, "MM0"}, {1, "MM1"}, {2, "MM2"}};
+  std::vector<blackwidow::ScoreMember> gp3_sm3 {{0, "MM0"}, {1, "MM1"}, {2, "MM2"}};
+  s = db.ZAdd("GP3_ZREVRANGE_KEY1", gp3_sm1, &ret);
+  ASSERT_TRUE(s.ok());
+  s = db.ZAdd("GP3_ZREVRANGE_KEY2", gp3_sm2, &ret);
+  ASSERT_TRUE(s.ok());
+  s = db.ZAdd("GP3_ZREVRANGE_KEY3", gp3_sm3, &ret);
+  ASSERT_TRUE(s.ok());
+
+  s = db.ZRevrange("GP3_ZREVRANGE_KEY2", 0, -1, &score_members);
+  ASSERT_TRUE(s.ok());
+  ASSERT_TRUE(score_members_match(score_members, {{2, "MM2"}, {1, "MM1"}, {0, "MM0"}}));
+
+  s = db.ZRevrange("GP3_ZREVRANGE_KEY2", 0, 0, &score_members);
+  ASSERT_TRUE(s.ok());
+  ASSERT_TRUE(score_members_match(score_members, {{2, "MM2"}}));
+
+  s = db.ZRevrange("GP3_ZREVRANGE_KEY2", -1, -1, &score_members);
+  ASSERT_TRUE(s.ok());
+  ASSERT_TRUE(score_members_match(score_members, {{0, "MM0"}}));
+
+  s = db.ZRevrange("GP3_ZREVRANGE_KEY2", 1, 1, &score_members);
+  ASSERT_TRUE(s.ok());
+  ASSERT_TRUE(score_members_match(score_members, {{1, "MM1"}}));
+
+
+  // ***************** Group 4 Test *****************
+  std::vector<blackwidow::ScoreMember> gp4_sm {{0, "MM1"}};
+  s = db.ZAdd("GP4_ZREVRANGE_KEY", gp4_sm, &ret);
   ASSERT_TRUE(s.ok());
   ASSERT_EQ(1, ret);
-  ASSERT_TRUE(size_match(&db, "GP3_ZREVRANGE_KEY", 1));
-  ASSERT_TRUE(score_members_match(&db, "GP3_ZREVRANGE_KEY", {{0, "MM1"}}));
-  ASSERT_TRUE(make_expired(&db, "GP3_ZREVRANGE_KEY"));
+  ASSERT_TRUE(size_match(&db, "GP4_ZREVRANGE_KEY", 1));
+  ASSERT_TRUE(score_members_match(&db, "GP4_ZREVRANGE_KEY", {{0, "MM1"}}));
+  ASSERT_TRUE(make_expired(&db, "GP4_ZREVRANGE_KEY"));
 
-  s = db.ZRevrange("GP3_ZREVRANGE_KEY", 0, -1, &score_members);
+  s = db.ZRevrange("GP4_ZREVRANGE_KEY", 0, -1, &score_members);
   ASSERT_TRUE(s.IsNotFound());
   ASSERT_TRUE(score_members_match(score_members, {}));
 
 
-  // ***************** Group 4 Test *****************
-  s = db.ZRevrange("GP4_ZREVRANGE_KEY", 0, -1, &score_members);
+  // ***************** Group 5 Test *****************
+  s = db.ZRevrange("GP5_ZREVRANGE_KEY", 0, -1, &score_members);
   ASSERT_TRUE(s.IsNotFound());
   ASSERT_TRUE(score_members_match(score_members, {}));
 }

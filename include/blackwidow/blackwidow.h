@@ -40,6 +40,8 @@ const std::string LISTS_DB = "lists";
 const std::string ZSETS_DB = "zsets";
 const std::string SETS_DB = "sets";
 
+const uint32_t COMPACT_THRESHOLD_COUNT = 2000;
+
 using Options = rocksdb::Options;
 using BlockBasedTableOptions = rocksdb::BlockBasedTableOptions;
 using Status = rocksdb::Status;
@@ -59,6 +61,8 @@ struct BlackwidowOptions {
   rocksdb::BlockBasedTableOptions table_options;
   size_t block_cache_size;
   bool share_block_cache;
+  size_t statistics_max_size;
+  size_t small_compaction_threshold;
 };
 
 struct KeyValue {
@@ -69,6 +73,21 @@ struct KeyValue {
   }
   bool operator < (const KeyValue& kv) const {
     return key < kv.key;
+  }
+};
+
+struct KeyInfo {
+  uint64_t keys;
+  uint64_t expires;
+  uint64_t avg_ttl;
+  uint64_t invaild_keys;
+};
+
+struct ValueStatus {
+  std::string value;
+  Status status;
+  bool operator == (const ValueStatus& vs) const {
+    return (vs.value == value && vs.status == status);
   }
 };
 
@@ -108,6 +127,12 @@ enum DataType {
   kLists,
   kZSets,
   kSets
+};
+
+enum ColumnFamilyType {
+  kMeta,
+  kData,
+  kMetaAndData
 };
 
 enum AGGREGATE {
@@ -195,7 +220,7 @@ class BlackWidow {
   // that does not hold a string value or does not exist, the
   // special value nil is returned
   Status MGet(const std::vector<std::string>& keys,
-              std::vector<std::string>* values);
+              std::vector<ValueStatus>* vss);
 
   // Set key to hold string value if key does not exist
   // return 1 if the key was set
@@ -303,7 +328,7 @@ class BlackWidow {
   // against a non-existing key will return a list of nil values.
   Status HMGet(const Slice& key,
                const std::vector<std::string>& fields,
-               std::vector<std::string>* values);
+               std::vector<ValueStatus>* vss);
 
   // Returns all fields and values of the hash stored at key. In the returned
   // value, every field name is followed by its value, so the length of the
@@ -374,6 +399,20 @@ class BlackWidow {
   // in the next call
   Status HScanx(const Slice& key, const std::string start_field, const std::string& pattern,
                 int64_t count, std::vector<FieldValue>* field_values, std::string* next_field);
+
+  // Iterate over a Hash table of fields by specified range
+  // return next_field that the user need to use as the start_field argument
+  // in the next call
+  Status PKHScanRange(const Slice& key,
+                      const Slice& field_start, const std::string& field_end,
+                      const Slice& pattern, int32_t limit,
+                      std::vector<FieldValue>* field_values, std::string* next_field);
+
+  // part from the reversed ordering, PKHRSCANRANGE is similar to PKHScanRange
+  Status PKHRScanRange(const Slice& key,
+                       const Slice& field_start, const std::string& field_end,
+                       const Slice& pattern, int32_t limit,
+                       std::vector<FieldValue>* field_values, std::string* next_field);
 
 
   // Sets Commands
@@ -955,6 +994,22 @@ class BlackWidow {
   int64_t Scan(int64_t cursor, const std::string& pattern,
                int64_t count, std::vector<std::string>* keys);
 
+  // Iterate over a collection of elements by specified range
+  // return a next_key that the user need to use as the key_start argument
+  // in the next call
+  Status PKScanRange(const DataType& data_type,
+                     const Slice& key_start, const Slice& key_end,
+                     const Slice& pattern, int32_t limit,
+                     std::vector<std::string>* keys, std::vector<KeyValue>* kvs,
+                     std::string* next_key);
+
+  // part from the reversed ordering, PKRSCANRANGE is similar to PKScanRange
+  Status PKRScanRange(const DataType& data_type,
+                      const Slice& key_start, const Slice& key_end,
+                      const Slice& pattern, int32_t limit,
+                      std::vector<std::string>* keys, std::vector<KeyValue>* kvs,
+                      std::string* next_key);
+
   // Iterate over a collection of elements
   // return next_key that the user need to use as the start_key argument
   // in the next call
@@ -1038,11 +1093,14 @@ class BlackWidow {
   Status DoCompact(const DataType& type);
   Status CompactKey(const DataType& type, const std::string& key);
 
+  Status SetMaxCacheStatisticKeys(uint32_t max_cache_statistic_keys);
+  Status SetSmallCompactionThreshold(uint32_t small_compaction_threshold);
+
   std::string GetCurrentTaskType();
   Status GetUsage(const std::string& type, uint64_t *result);
   uint64_t GetProperty(const std::string &property);
 
-  Status GetKeyNum(std::vector<uint64_t>* nums);
+  Status GetKeyNum(std::vector<KeyInfo>* key_infos);
   Status StopScanKeyNum();
 
   rocksdb::DB* GetDBByType(const std::string& type);

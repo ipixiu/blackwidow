@@ -66,16 +66,57 @@ static bool string_ttl(blackwidow::BlackWidow *const db,
 TEST_F(StringsTest, AppendTest) {
   int32_t ret;
   std::string value;
-  s = db.Append("APPEND_KEY", "HELLO", &ret);
+  std::map<DataType, Status> type_status;
+  std::map<DataType, int64_t> type_ttl;
+  // ***************** Group 1 Test *****************
+  s = db.Append("GP1_APPEND_KEY", "HELLO", &ret);
   ASSERT_TRUE(s.ok());
   ASSERT_EQ(ret, 5);
 
-  s = db.Append("APPEND_KEY", " WORLD", &ret);
+  s = db.Append("GP1_APPEND_KEY", " WORLD", &ret);
   ASSERT_TRUE(s.ok());
   ASSERT_EQ(ret, 11);
 
-  s = db.Get("APPEND_KEY", &value);
+  s = db.Get("GP1_APPEND_KEY", &value);
   ASSERT_STREQ(value.c_str(), "HELLO WORLD");
+
+
+  // ***************** Group 2 Test *****************
+  s = db.Set("GP2_APPEND_KEY", "VALUE");
+  ASSERT_TRUE(s.ok());
+  ret = db.Expire("GP2_APPEND_KEY", 100, &type_status);
+  ASSERT_EQ(ret, 1);
+  type_status.clear();
+  type_ttl = db.TTL("GP2_APPEND_KEY", &type_status);
+  ASSERT_LE(type_ttl[kStrings], 100);
+  ASSERT_GE(type_ttl[kStrings], 0);
+
+  s = db.Append("GP2_APPEND_KEY", "VALUE", &ret);
+  ASSERT_TRUE(s.ok());
+  ASSERT_EQ(ret, 10);
+  s = db.Get("GP2_APPEND_KEY", &value);
+  ASSERT_STREQ(value.c_str(), "VALUEVALUE");
+
+  type_status.clear();
+  type_ttl = db.TTL("GP2_APPEND_KEY", &type_status);
+  ASSERT_LE(type_ttl[kStrings], 100);
+  ASSERT_GE(type_ttl[kStrings], 0);
+
+
+  // ***************** Group 3 Test *****************
+  s = db.Set("GP3_APPEND_KEY", "VALUE");
+  ASSERT_TRUE(s.ok());
+  make_expired(&db, "GP3_APPEND_KEY");
+
+  s = db.Append("GP3_APPEND_KEY", "VALUE", &ret);
+  ASSERT_TRUE(s.ok());
+  ASSERT_EQ(ret, 5);
+  s = db.Get("GP3_APPEND_KEY", &value);
+  ASSERT_STREQ(value.c_str(), "VALUE");
+
+  type_status.clear();
+  type_ttl = db.TTL("GP3_APPEND_KEY", &type_status);
+  ASSERT_EQ(type_ttl[kStrings], -1);
 }
 
 // BitCount
@@ -153,22 +194,75 @@ TEST_F(StringsTest, BitOpTest) {
 // Decrby
 TEST_F(StringsTest, DecrbyTest) {
   int64_t ret;
+  std::string value;
+  std::map<DataType, Status> type_status;
+  std::map<DataType, int64_t> type_ttl;
+
+  // ***************** Group 1 Test *****************
   // If the key is not exist
-  s = db.Decrby("DECRBY_KEY", 5, &ret);
+  s = db.Decrby("GP1_DECRBY_KEY", 5, &ret);
   ASSERT_TRUE(s.ok());
   ASSERT_EQ(ret, -5);
 
   // If the key contains a string that can not be represented as integer
-  s = db.Set("DECRBY_KEY", "DECRBY_VALUE");
+  s = db.Set("GP1_DECRBY_KEY", "DECRBY_VALUE");
   ASSERT_TRUE(s.ok());
-  s = db.Decrby("DECRBY_KEY", 5, &ret);
+  s = db.Decrby("GP1_DECRBY_KEY", 5, &ret);
   ASSERT_TRUE(s.IsCorruption());
 
   // Less than the minimum number -9223372036854775808
-  s = db.Set("DECRBY_KEY", "-2");
+  s = db.Set("GP1_DECRBY_KEY", "-2");
   ASSERT_TRUE(s.ok());
-  s = db.Decrby("DECRBY_KEY", 9223372036854775807, &ret);
+  s = db.Decrby("GP1_DECRBY_KEY", 9223372036854775807, &ret);
   ASSERT_TRUE(s.IsInvalidArgument());
+
+
+  // ***************** Group 2 Test *****************
+  s = db.Set("GP2_DECRBY_KEY", "10");
+  ASSERT_TRUE(s.ok());
+  ret = db.Expire("GP2_DECRBY_KEY", 100, &type_status);
+  ASSERT_EQ(ret, 1);
+  type_status.clear();
+  type_ttl = db.TTL("GP2_DECRBY_KEY", &type_status);
+  ASSERT_LE(type_ttl[kStrings], 100);
+  ASSERT_GE(type_ttl[kStrings], 0);
+
+  s = db.Decrby("GP2_DECRBY_KEY", 5, &ret);
+  ASSERT_TRUE(s.ok());
+  ASSERT_EQ(ret, 5);
+  s = db.Get("GP2_DECRBY_KEY", &value);
+  ASSERT_EQ(value, "5");
+
+  type_ttl = db.TTL("GP2_DECRBY_KEY", &type_status);
+  ASSERT_LE(type_ttl[kStrings], 100);
+  ASSERT_GE(type_ttl[kStrings], 0);
+
+
+  // ***************** Group 3 Test *****************
+  s = db.Set("GP3_DECRBY_KEY", "10");
+  ASSERT_TRUE(s.ok());
+  make_expired(&db, "GP3_DECRBY_KEY");
+
+  s = db.Decrby("GP3_DECRBY_KEY", 5, &ret);
+  ASSERT_TRUE(s.ok());
+  ASSERT_EQ(ret, -5);
+  s = db.Get("GP3_DECRBY_KEY", &value);
+  ASSERT_EQ(value, "-5");
+
+  type_status.clear();
+  type_ttl = db.TTL("GP3_DECRBY_KEY", &type_status);
+  ASSERT_EQ(type_ttl[kStrings], -1);
+
+
+  // ***************** Group 4 Test *****************
+  s = db.Set("GP4_DECRBY_KEY", "100000");
+  ASSERT_TRUE(s.ok());
+
+  s = db.Decrby("GP4_DECRBY_KEY", 50000, &ret);
+  ASSERT_TRUE(s.ok());
+  ASSERT_EQ(ret, 50000);
+  s = db.Get("GP4_DECRBY_KEY", &value);
+  ASSERT_EQ(value, "50000");
 }
 
 // Get
@@ -253,64 +347,205 @@ TEST_F(StringsTest, GetSetTest) {
 // Incrby
 TEST_F(StringsTest, IncrbyTest) {
   int64_t ret;
+  std::string value;
+  std::map<DataType, Status> type_status;
+  std::map<DataType, int64_t> type_ttl;
+
+  // ***************** Group 1 Test *****************
   // If the key is not exist
-  s = db.Incrby("INCRBY_KEY", 5, &ret);
+  s = db.Incrby("GP1_INCRBY_KEY", 5, &ret);
   ASSERT_TRUE(s.ok());
   ASSERT_EQ(ret, 5);
 
   // If the key contains a string that can not be represented as integer
-  s = db.Set("INCRBY_KEY", "INCRBY_VALUE");
+  s = db.Set("GP1_INCRBY_KEY", "INCRBY_VALUE");
   ASSERT_TRUE(s.ok());
-  s = db.Incrby("INCRBY_KEY", 5, &ret);
+  s = db.Incrby("GP1_INCRBY_KEY", 5, &ret);
   ASSERT_TRUE(s.IsCorruption());
 
-  s = db.Set("INCRBY_KEY", "1");
+  s = db.Set("GP1_INCRBY_KEY", "1");
   ASSERT_TRUE(s.ok());
   // Less than the maximum number 9223372036854775807
-  s = db.Incrby("INCRBY_KEY", 9223372036854775807, &ret);
+  s = db.Incrby("GP1_INCRBY_KEY", 9223372036854775807, &ret);
   ASSERT_TRUE(s.IsInvalidArgument());
+
+
+  // ***************** Group 2 Test *****************
+  s = db.Set("GP2_INCRBY_KEY", "10");
+  ASSERT_TRUE(s.ok());
+  ret = db.Expire("GP2_INCRBY_KEY", 100, &type_status);
+  ASSERT_EQ(ret, 1);
+  type_status.clear();
+  type_ttl = db.TTL("GP2_INCRBY_KEY", &type_status);
+  ASSERT_LE(type_ttl[kStrings], 100);
+  ASSERT_GE(type_ttl[kStrings], 0);
+
+  s = db.Incrby("GP2_INCRBY_KEY", 5, &ret);
+  ASSERT_TRUE(s.ok());
+  ASSERT_EQ(ret, 15);
+  s = db.Get("GP2_INCRBY_KEY", &value);
+  ASSERT_EQ(value, "15");
+
+  type_ttl = db.TTL("GP2_INCRBY_KEY", &type_status);
+  ASSERT_LE(type_ttl[kStrings], 100);
+  ASSERT_GE(type_ttl[kStrings], 0);
+
+
+  // ***************** Group 3 Test *****************
+  s = db.Set("GP3_INCRBY_KEY", "10");
+  ASSERT_TRUE(s.ok());
+  make_expired(&db, "GP3_INCRBY_KEY");
+
+  s = db.Incrby("GP3_INCRBY_KEY", 5, &ret);
+  ASSERT_TRUE(s.ok());
+  ASSERT_EQ(ret, 5);
+  s = db.Get("GP3_INCRBY_KEY", &value);
+  ASSERT_EQ(value, "5");
+
+  type_status.clear();
+  type_ttl = db.TTL("GP3_INCRBY_KEY", &type_status);
+  ASSERT_EQ(type_ttl[kStrings], -1);
+
+
+  // ***************** Group 4 Test *****************
+  s = db.Set("GP4_INCRBY_KEY", "50000");
+  ASSERT_TRUE(s.ok());
+
+  s = db.Incrby("GP4_INCRBY_KEY", 50000, &ret);
+  ASSERT_TRUE(s.ok());
+  ASSERT_EQ(ret, 100000);
+  s = db.Get("GP4_INCRBY_KEY", &value);
+  ASSERT_EQ(value, "100000");
+
 }
 
 // Incrbyfloat
 TEST_F(StringsTest, IncrbyfloatTest) {
+  int32_t ret;
   std::string value;
-  s = db.Set("INCRBYFLOAT_KEY", "10.50");
+  std::map<DataType, Status> type_status;
+  std::map<DataType, int64_t> type_ttl;
+
+  // ***************** Group 1 Test *****************
+  s = db.Set("GP1_INCRBYFLOAT_KEY", "10.50");
   ASSERT_TRUE(s.ok());
-  s = db.Incrbyfloat("INCRBYFLOAT_KEY", "0.1", &value);
+  s = db.Incrbyfloat("GP1_INCRBYFLOAT_KEY", "0.1", &value);
   ASSERT_TRUE(s.ok());
   ASSERT_STREQ(value.c_str(), "10.6");
-  s = db.Incrbyfloat("INCRBYFLOAT_KEY", "-5", &value);
+  s = db.Incrbyfloat("GP1_INCRBYFLOAT_KEY", "-5", &value);
   ASSERT_TRUE(s.ok());
   ASSERT_STREQ(value.c_str(), "5.6");
 
   // If the key contains a string that can not be represented as integer
-  s = db.Set("INCRBYFLOAT_KEY", "INCRBY_VALUE");
+  s = db.Set("GP1_INCRBYFLOAT_KEY", "INCRBY_VALUE");
   ASSERT_TRUE(s.ok());
-  s = db.Incrbyfloat("INCRBYFLOAT_KEY", "5", &value);
+  s = db.Incrbyfloat("GP1_INCRBYFLOAT_KEY", "5", &value);
   ASSERT_TRUE(s.IsCorruption());
+
+
+  // ***************** Group 2 Test *****************
+  s = db.Set("GP2_INCRBYFLOAT_KEY", "10.11111");
+  ASSERT_TRUE(s.ok());
+  ret = db.Expire("GP2_INCRBYFLOAT_KEY", 100, &type_status);
+  ASSERT_EQ(ret, 1);
+  type_status.clear();
+  type_ttl = db.TTL("GP2_INCRBYFLOAT_KEY", &type_status);
+  ASSERT_LE(type_ttl[kStrings], 100);
+  ASSERT_GE(type_ttl[kStrings], 0);
+
+  s = db.Incrbyfloat("GP2_INCRBYFLOAT_KEY", "10.22222", &value);
+  ASSERT_TRUE(s.ok());
+  ASSERT_EQ(value, "20.33333");
+  s = db.Get("GP2_INCRBYFLOAT_KEY", &value);
+  ASSERT_EQ(value, "20.33333");
+
+  type_ttl = db.TTL("GP2_INCRBYFLOAT_KEY", &type_status);
+  ASSERT_LE(type_ttl[kStrings], 100);
+  ASSERT_GE(type_ttl[kStrings], 0);
+
+
+  // ***************** Group 3 Test *****************
+  s = db.Set("GP3_INCRBYFLOAT_KEY", "10");
+  ASSERT_TRUE(s.ok());
+  make_expired(&db, "GP3_INCRBYFLOAT_KEY");
+
+  s = db.Incrbyfloat("GP3_INCRBYFLOAT_KEY", "0.123456", &value);
+  ASSERT_TRUE(s.ok());
+  ASSERT_EQ(value, "0.123456");
+  s = db.Get("GP3_INCRBYFLOAT_KEY", &value);
+  ASSERT_EQ(value, "0.123456");
+
+  type_status.clear();
+  type_ttl = db.TTL("GP3_INCRBYFLOAT_KEY", &type_status);
+  ASSERT_EQ(type_ttl[kStrings], -1);
+
+
+  // ***************** Group 4 Test *****************
+  s = db.Set("GP4_INCRBYFLOAT_KEY", "100.001");
+  ASSERT_TRUE(s.ok());
+
+  s = db.Incrbyfloat("GP4_INCRBYFLOAT_KEY", "11.11", &value);
+  ASSERT_TRUE(s.ok());
+  ASSERT_EQ(value, "111.111");
+  s = db.Get("GP4_INCRBYFLOAT_KEY", &value);
+  ASSERT_EQ(value, "111.111");
 }
 
 // MGet
 TEST_F(StringsTest, MGetTest) {
-  std::vector<blackwidow::KeyValue> kvs {{"MGET_KEY1", "VALUE1"},
-                                         {"MGET_KEY2", "VALUE2"},
-                                         {"MGET_KEY3", "VALUE3"}};
-  s = db.MSet(kvs);
+  std::vector<blackwidow::ValueStatus> vss;
+
+  // ***************** Group 1 Test *****************
+  std::vector<blackwidow::KeyValue> kvs1 {{"GP1_MGET_KEY1", "VALUE1"},
+                                          {"GP1_MGET_KEY2", "VALUE2"},
+                                          {"GP1_MGET_KEY3", "VALUE3"}};
+  s = db.MSet(kvs1);
   ASSERT_TRUE(s.ok());
-  std::vector<std::string> values;
-  std::vector<std::string> keys {"",
-                                 "MGET_KEY1",
-                                 "MGET_KEY2",
-                                 "MGET_KEY3",
-                                 "MGET_NOT_EXIST_KEY"};
-  s = db.MGet(keys, &values);
+  std::vector<std::string> keys1 {"",
+                                  "GP1_MGET_KEY1",
+                                  "GP1_MGET_KEY2",
+                                  "GP1_MGET_KEY3",
+                                  "GP1_MGET_NOT_EXIST_KEY"};
+  vss.clear();
+  s = db.MGet(keys1, &vss);
   ASSERT_TRUE(s.ok());
-  ASSERT_EQ(values.size(), 5);
-  ASSERT_EQ(values[0], "");
-  ASSERT_EQ(values[1], "VALUE1");
-  ASSERT_EQ(values[2], "VALUE2");
-  ASSERT_EQ(values[3], "VALUE3");
-  ASSERT_EQ(values[4], "");
+  ASSERT_EQ(vss.size(), 5);
+  ASSERT_TRUE(vss[0].status.IsNotFound());
+  ASSERT_EQ(vss[0].value, "");
+  ASSERT_TRUE(vss[1].status.ok());
+  ASSERT_EQ(vss[1].value, "VALUE1");
+  ASSERT_TRUE(vss[2].status.ok());
+  ASSERT_EQ(vss[2].value, "VALUE2");
+  ASSERT_TRUE(vss[3].status.ok());
+  ASSERT_EQ(vss[3].value, "VALUE3");
+  ASSERT_TRUE(vss[4].status.IsNotFound());
+  ASSERT_EQ(vss[4].value, "");
+
+
+  // ***************** Group 2 Test *****************
+  std::vector<blackwidow::KeyValue> kvs2 {{"GP2_MGET_KEY1", "VALUE1"},
+                                          {"GP2_MGET_KEY2", "VALUE2"},
+                                          {"GP2_MGET_KEY3", ""}};
+  s = db.MSet(kvs2);
+  ASSERT_TRUE(s.ok());
+  std::vector<std::string> keys2 {"GP2_MGET_KEY1",
+                                  "GP2_MGET_KEY2",
+                                  "GP2_MGET_KEY3",
+                                  "GP2_MGET_NOT_EXIST_KEY"};
+  ASSERT_TRUE(make_expired(&db, "GP2_MGET_KEY2"));
+
+  vss.clear();
+  s = db.MGet(keys2, &vss);
+  ASSERT_TRUE(s.ok());
+  ASSERT_EQ(vss.size(), 4);
+  ASSERT_TRUE(vss[0].status.ok());
+  ASSERT_EQ(vss[0].value, "VALUE1");
+  ASSERT_TRUE(vss[1].status.IsNotFound());
+  ASSERT_EQ(vss[1].value, "");
+  ASSERT_TRUE(vss[2].status.ok());
+  ASSERT_EQ(vss[2].value, "");
+  ASSERT_TRUE(vss[3].status.IsNotFound());
+  ASSERT_EQ(vss[3].value, "");
 }
 
 // MSet

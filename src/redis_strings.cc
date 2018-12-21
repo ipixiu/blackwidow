@@ -17,12 +17,16 @@
 
 namespace blackwidow {
 
+RedisStrings::RedisStrings(BlackWidow* const bw, const DataType& type)
+    : Redis(bw, type) {
+}
+
 Status RedisStrings::Open(const BlackwidowOptions& bw_options,
     const std::string& db_path) {
   rocksdb::Options ops(bw_options.options);
   ops.compaction_filter_factory = std::make_shared<StringsFilterFactory>();
 
-  //use the bloom filter policy to reduce disk reads
+  // use the bloom filter policy to reduce disk reads
   rocksdb::BlockBasedTableOptions table_ops(bw_options.table_options);
   if (!bw_options.share_block_cache && bw_options.block_cache_size > 0) {
     table_ops.block_cache = rocksdb::NewLRUCache(bw_options.block_cache_size);
@@ -34,7 +38,8 @@ Status RedisStrings::Open(const BlackwidowOptions& bw_options,
 }
 
 Status RedisStrings::CompactRange(const rocksdb::Slice* begin,
-    const rocksdb::Slice* end) {
+                                  const rocksdb::Slice* end,
+                                  const ColumnFamilyType& type) {
   return db_->CompactRange(default_compact_range_options_, begin, end);
 }
 
@@ -45,14 +50,20 @@ Status RedisStrings::GetProperty(const std::string& property, uint64_t* out) {
   return Status::OK();
 }
 
-Status RedisStrings::ScanKeyNum(uint64_t* num) {
+Status RedisStrings::ScanKeyNum(KeyInfo* key_info) {
+  uint64_t keys = 0;
+  uint64_t expires = 0;
+  uint64_t ttl_sum = 0;
+  uint64_t invaild_keys = 0;
 
-  uint64_t count = 0;
   rocksdb::ReadOptions iterator_options;
   const rocksdb::Snapshot* snapshot;
   ScopeSnapshot ss(db_, &snapshot);
   iterator_options.snapshot = snapshot;
   iterator_options.fill_cache = false;
+
+  int64_t curtime;
+  rocksdb::Env::Default()->GetCurrentTime(&curtime);
 
   // Note: This is a string type and does not need to pass the column family as
   // a parameter, use the default column family
@@ -61,12 +72,22 @@ Status RedisStrings::ScanKeyNum(uint64_t* num) {
        iter->Valid();
        iter->Next()) {
     ParsedStringsValue parsed_strings_value(iter->value());
-    if (!parsed_strings_value.IsStale()) {
-      count++;
+    if (parsed_strings_value.IsStale()) {
+      invaild_keys++;
+    } else {
+      keys++;
+      if (!parsed_strings_value.IsPermanentSurvival()) {
+        expires++;
+        ttl_sum += parsed_strings_value.timestamp() - curtime;
+      }
     }
   }
-  *num = count;
   delete iter;
+
+  key_info->keys = keys;
+  key_info->expires = expires;
+  key_info->avg_ttl = (expires != 0) ? ttl_sum / expires : 0;
+  key_info->invaild_keys = invaild_keys;
   return Status::OK();
 }
 
@@ -88,7 +109,8 @@ Status RedisStrings::ScanKeys(const std::string& pattern,
     ParsedStringsValue parsed_strings_value(iter->value());
     if (!parsed_strings_value.IsStale()) {
       key = iter->key().ToString();
-      if (StringMatch(pattern.data(), pattern.size(), key.data(), key.size(), 0)) {
+      if (StringMatch(pattern.data(),
+            pattern.size(), key.data(), key.size(), 0)) {
         keys->push_back(key);
       }
     }
@@ -110,10 +132,12 @@ Status RedisStrings::Append(const Slice& key, const Slice& value,
       StringsValue strings_value(value);
       return db_->Put(default_write_options_, key, strings_value.Encode());
     } else {
-      parsed_strings_value.StripSuffix();
-      *ret = old_value.size() + value.size();
-      old_value += value.data();
-      StringsValue strings_value(old_value);
+      int32_t timestamp = parsed_strings_value.timestamp();
+      std::string old_user_value = parsed_strings_value.value().ToString();
+      std::string new_value = old_user_value + value.ToString();
+      StringsValue strings_value(new_value);
+      strings_value.set_timestamp(timestamp);
+      *ret = new_value.size();
       return db_->Put(default_write_options_, key, strings_value.Encode());
     }
   } else if (s.IsNotFound()) {
@@ -298,9 +322,10 @@ Status RedisStrings::Decrby(const Slice& key, int64_t value, int64_t* ret) {
       StringsValue strings_value(new_value);
       return db_->Put(default_write_options_, key, strings_value.Encode());
     } else {
-      parsed_strings_value.StripSuffix();
+      int32_t timestamp = parsed_strings_value.timestamp();
+      std::string old_user_value = parsed_strings_value.value().ToString();
       char* end = nullptr;
-      int64_t ival = strtoll(old_value.c_str(), &end, 10);
+      int64_t ival = strtoll(old_user_value.c_str(), &end, 10);
       if (*end != 0) {
         return Status::Corruption("Value is not a integer");
       }
@@ -311,6 +336,7 @@ Status RedisStrings::Decrby(const Slice& key, int64_t value, int64_t* ret) {
       *ret = ival - value;
       new_value = std::to_string(*ret);
       StringsValue strings_value(new_value);
+      strings_value.set_timestamp(timestamp);
       return db_->Put(default_write_options_, key, strings_value.Encode());
     }
   } else if (s.IsNotFound()) {
@@ -357,7 +383,7 @@ Status RedisStrings::GetBit(const Slice& key, int64_t offset, int32_t* ret) {
     if (byte + 1 > data_value.length()) {
       *ret = 0;
     } else {
-      *ret = (data_value[byte] & 1<<bit) >> bit;
+      *ret = ((data_value[byte] & (1 << bit)) >> bit);
     }
   } else {
     return s;
@@ -435,9 +461,10 @@ Status RedisStrings::Incrby(const Slice& key, int64_t value, int64_t* ret) {
       StringsValue strings_value(buf);
       return db_->Put(default_write_options_, key, strings_value.Encode());
     } else {
-      parsed_strings_value.StripSuffix();
+      int32_t timestamp = parsed_strings_value.timestamp();
+      std::string old_user_value = parsed_strings_value.value().ToString();
       char* end = nullptr;
-      int64_t ival = strtoll(old_value.c_str(), &end, 10);
+      int64_t ival = strtoll(old_user_value.c_str(), &end, 10);
       if (*end != 0) {
         return Status::Corruption("Value is not a integer");
       }
@@ -446,9 +473,9 @@ Status RedisStrings::Incrby(const Slice& key, int64_t value, int64_t* ret) {
         return Status::InvalidArgument("Overflow");
       }
       *ret = ival + value;
-      char buf[32];
-      Int64ToStr(buf, 32, *ret);
-      StringsValue strings_value(buf);
+      new_value = std::to_string(*ret);
+      StringsValue strings_value(new_value);
+      strings_value.set_timestamp(timestamp);
       return db_->Put(default_write_options_, key, strings_value.Encode());
     }
   } else if (s.IsNotFound()) {
@@ -479,10 +506,11 @@ Status RedisStrings::Incrbyfloat(const Slice& key, const Slice& value,
       StringsValue strings_value(new_value);
       return db_->Put(default_write_options_, key, strings_value.Encode());
     } else {
-      parsed_strings_value.StripSuffix();
+      int32_t timestamp = parsed_strings_value.timestamp();
+      std::string old_user_value = parsed_strings_value.value().ToString();
       long double total, old_number;
-      if (StrToLongDouble(old_value.data(),
-                          old_value.size(), &old_number) == -1) {
+      if (StrToLongDouble(old_user_value.data(),
+                          old_user_value.size(), &old_number) == -1) {
         return Status::Corruption("Value is not a vaild float");
       }
       total = old_number + long_double_by;
@@ -491,6 +519,7 @@ Status RedisStrings::Incrbyfloat(const Slice& key, const Slice& value,
       }
       *ret = new_value;
       StringsValue strings_value(new_value);
+      strings_value.set_timestamp(timestamp);
       return db_->Put(default_write_options_, key, strings_value.Encode());
     }
   } else if (s.IsNotFound()) {
@@ -504,7 +533,9 @@ Status RedisStrings::Incrbyfloat(const Slice& key, const Slice& value,
 }
 
 Status RedisStrings::MGet(const std::vector<std::string>& keys,
-                          std::vector<std::string>* values) {
+                          std::vector<ValueStatus>* vss) {
+  vss->clear();
+
   Status s;
   std::string value;
   rocksdb::ReadOptions read_options;
@@ -516,14 +547,17 @@ Status RedisStrings::MGet(const std::vector<std::string>& keys,
     if (s.ok()) {
       ParsedStringsValue parsed_strings_value(&value);
       if (parsed_strings_value.IsStale()) {
-        value.clear();
+        vss->push_back({std::string(), Status::NotFound("Stale")});
       } else {
-        parsed_strings_value.StripSuffix();
+        vss->push_back(
+            {parsed_strings_value.user_value().ToString(), Status::OK()});
       }
+    } else if (s.IsNotFound()) {
+      vss->push_back({std::string(), Status::NotFound()});
     } else {
-      value.clear();
+      vss->clear();
+      return s;
     }
-    values->push_back(value);
   }
   return Status::OK();
 }
@@ -568,7 +602,9 @@ Status RedisStrings::MSetnx(const std::vector<KeyValue>& kvs,
   return s;
 }
 
-Status RedisStrings::Set(const Slice& key, const Slice& value, const int32_t ttl) {
+Status RedisStrings::Set(const Slice& key,
+                         const Slice& value,
+                         const int32_t ttl) {
   StringsValue strings_value(value);
   ScopeRecordLock l(lock_mgr_, key);
   if (ttl > 0) {
@@ -577,7 +613,10 @@ Status RedisStrings::Set(const Slice& key, const Slice& value, const int32_t ttl
   return db_->Put(default_write_options_, key, strings_value.Encode());
 }
 
-Status RedisStrings::Setxx(const Slice& key, const Slice& value, int32_t* ret, const int32_t ttl) {
+Status RedisStrings::Setxx(const Slice& key,
+                           const Slice& value,
+                           int32_t* ret,
+                           const int32_t ttl) {
   bool not_found = true;
   std::string old_value;
   StringsValue strings_value(value);
@@ -629,14 +668,14 @@ Status RedisStrings::SetBit(const Slice& key, int64_t offset,
       *ret = 0;
       byte_val = 0;
     } else {
-      *ret = (data_value[byte] & 1<<bit) >> bit;
+      *ret = ((data_value[byte] & (1 << bit)) >> bit);
       byte_val = data_value[byte];
     }
     if (*ret == on) {
       return Status::OK();
     }
-    byte_val &= (char) ~(1 << bit);
-    byte_val |= (char) ((on & 0x1) << bit);
+    byte_val &= static_cast<char>(~(1 << bit));
+    byte_val |= static_cast<char>((on & 0x1) << bit);
     if (byte + 1 <= value_lenth) {
       data_value.replace(byte, 1, &byte_val, 1);
     } else {
@@ -660,7 +699,10 @@ Status RedisStrings::Setex(const Slice& key, const Slice& value, int32_t ttl) {
   return db_->Put(default_write_options_, key, strings_value.Encode());
 }
 
-Status RedisStrings::Setnx(const Slice& key, const Slice& value, int32_t* ret, const int32_t ttl) {
+Status RedisStrings::Setnx(const Slice& key,
+                           const Slice& value,
+                           int32_t* ret,
+                           const int32_t ttl) {
   *ret = 0;
   std::string old_value;
   ScopeRecordLock l(lock_mgr_, key);
@@ -690,8 +732,11 @@ Status RedisStrings::Setnx(const Slice& key, const Slice& value, int32_t* ret, c
   return s;
 }
 
-Status RedisStrings::Setvx(const Slice& key, const Slice& value,
-                           const Slice& new_value, int32_t* ret, const int32_t ttl) {
+Status RedisStrings::Setvx(const Slice& key,
+                           const Slice& value,
+                           const Slice& new_value,
+                           int32_t* ret,
+                           const int32_t ttl) {
   *ret = 0;
   std::string old_value;
   ScopeRecordLock l(lock_mgr_, key);
@@ -994,6 +1039,135 @@ Status RedisStrings::BitPos(const Slice& key, int32_t bit,
   return Status::OK();
 }
 
+Status RedisStrings::PKScanRange(const Slice& key_start,
+                                 const Slice& key_end,
+                                 const Slice& pattern,
+                                 int32_t limit,
+                                 std::vector<KeyValue>* kvs,
+                                 std::string* next_key) {
+  next_key->clear();
+
+  std::string key, value;
+  int32_t remain = limit;
+  rocksdb::ReadOptions iterator_options;
+  const rocksdb::Snapshot* snapshot;
+  ScopeSnapshot ss(db_, &snapshot);
+  iterator_options.snapshot = snapshot;
+  iterator_options.fill_cache = false;
+
+  bool start_no_limit = !key_start.compare("");
+  bool end_no_limit = !key_end.compare("");
+
+  if (!start_no_limit
+    && !end_no_limit
+    && (key_start.compare(key_end) > 0)) {
+    return Status::InvalidArgument("error in given range");
+  }
+
+  // Note: This is a string type and does not need to pass the column family as
+  // a parameter, use the default column family
+  rocksdb::Iterator* it = db_->NewIterator(iterator_options);
+  if (start_no_limit) {
+    it->SeekToFirst();
+  } else {
+    it->Seek(key_start);
+  }
+
+  while (it->Valid() && remain > 0
+    && (end_no_limit || it->key().compare(key_end) <= 0)) {
+    ParsedStringsValue parsed_strings_value(it->value());
+    if (parsed_strings_value.IsStale()) {
+      it->Next();
+    } else {
+      key = it->key().ToString();
+      value = parsed_strings_value.value().ToString();
+      if (StringMatch(pattern.data(), pattern.size(),
+                         key.data(), key.size(), 0)) {
+        kvs->push_back({key, value});
+      }
+      remain--;
+      it->Next();
+    }
+  }
+
+  while (it->Valid()
+    && (end_no_limit || it->key().compare(key_end) <= 0)) {
+    ParsedStringsValue parsed_strings_value(it->value());
+    if (parsed_strings_value.IsStale()) {
+      it->Next();
+    } else {
+      *next_key = it->key().ToString();
+      break;
+    }
+  }
+  delete it;
+  return Status::OK();
+}
+
+Status RedisStrings::PKRScanRange(const Slice& key_start,
+                                  const Slice& key_end,
+                                  const Slice& pattern,
+                                  int32_t limit,
+                                  std::vector<KeyValue>* kvs,
+                                  std::string* next_key) {
+  std::string key, value;
+  int32_t remain = limit;
+  rocksdb::ReadOptions iterator_options;
+  const rocksdb::Snapshot* snapshot;
+  ScopeSnapshot ss(db_, &snapshot);
+  iterator_options.snapshot = snapshot;
+  iterator_options.fill_cache = false;
+
+  bool start_no_limit = !key_start.compare("");
+  bool end_no_limit = !key_end.compare("");
+
+  if (!start_no_limit
+    && !end_no_limit
+    && (key_start.compare(key_end) < 0)) {
+    return Status::InvalidArgument("error in given range");
+  }
+
+  // Note: This is a string type and does not need to pass the column family as
+  // a parameter, use the default column family
+  rocksdb::Iterator* it = db_->NewIterator(iterator_options);
+  if (start_no_limit) {
+    it->SeekToLast();
+  } else {
+    it->SeekForPrev(key_start);
+  }
+
+  while (it->Valid() && remain > 0
+    && (end_no_limit || it->key().compare(key_end) >= 0)) {
+    ParsedStringsValue parsed_strings_value(it->value());
+    if (parsed_strings_value.IsStale()) {
+      it->Prev();
+    } else {
+      key = it->key().ToString();
+      value = parsed_strings_value.value().ToString();
+      if (StringMatch(pattern.data(), pattern.size(),
+                         key.data(), key.size(), 0)) {
+        kvs->push_back({key, value});
+      }
+      remain--;
+      it->Prev();
+    }
+  }
+
+  while (it->Valid()
+    && (end_no_limit || it->key().compare(key_end) >= 0)) {
+    ParsedStringsValue parsed_strings_value(it->value());
+    if (parsed_strings_value.IsStale()) {
+      it->Prev();
+    } else {
+      *next_key = it->key().ToString();
+      break;
+    }
+  }
+  delete it;
+  return Status::OK();
+}
+
+
 Status RedisStrings::Expire(const Slice& key, int32_t ttl) {
   std::string value;
   ScopeRecordLock l(lock_mgr_, key);
@@ -1032,7 +1206,7 @@ bool RedisStrings::Scan(const std::string& start_key,
                         std::vector<std::string>* keys,
                         int64_t* count,
                         std::string* next_key) {
-  std::string key, value;
+  std::string key;
   bool is_finish = true;
   rocksdb::ReadOptions iterator_options;
   const rocksdb::Snapshot* snapshot;
@@ -1052,7 +1226,6 @@ bool RedisStrings::Scan(const std::string& start_key,
       continue;
     } else {
       key = it->key().ToString();
-      value = it->value().ToString();
       if (StringMatch(pattern.data(), pattern.size(),
                          key.data(), key.size(), 0)) {
         keys->push_back(key);
@@ -1084,8 +1257,12 @@ Status RedisStrings::Expireat(const Slice& key, int32_t timestamp) {
     if (parsed_strings_value.IsStale()) {
       return Status::NotFound("Stale");
     } else {
-      parsed_strings_value.set_timestamp(timestamp);
-      return db_->Put(default_write_options_, key, value);
+      if (timestamp > 0) {
+        parsed_strings_value.set_timestamp(timestamp);
+        return db_->Put(default_write_options_, key, value);
+      } else {
+        return db_->Delete(default_write_options_, key);
+      }
     }
   }
   return s;
@@ -1128,7 +1305,7 @@ Status RedisStrings::TTL(const Slice& key, int64_t* timestamp) {
       } else {
         int64_t curtime;
         rocksdb::Env::Default()->GetCurrentTime(&curtime);
-        *timestamp = *timestamp - curtime > 0 ? *timestamp - curtime : -1;
+        *timestamp = *timestamp - curtime >= 0 ? *timestamp - curtime : -2;
       }
     }
   } else if (s.IsNotFound()) {
@@ -1138,7 +1315,6 @@ Status RedisStrings::TTL(const Slice& key, int64_t* timestamp) {
 }
 
 void RedisStrings::ScanDatabase() {
-
   rocksdb::ReadOptions iterator_options;
   const rocksdb::Snapshot* snapshot;
   ScopeSnapshot ss(db_, &snapshot);

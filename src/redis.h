@@ -24,10 +24,10 @@ using Slice = rocksdb::Slice;
 
 class Redis {
  public:
-  Redis();
+  Redis(BlackWidow* const bw, const DataType& type);
   virtual ~Redis();
 
-  rocksdb::DB* get_db() {
+  rocksdb::DB* GetDB() {
     return db_;
   }
 
@@ -35,9 +35,10 @@ class Redis {
   virtual Status Open(const BlackwidowOptions& bw_options,
                       const std::string& db_path) = 0;
   virtual Status CompactRange(const rocksdb::Slice* begin,
-                              const rocksdb::Slice* end) = 0;
+                              const rocksdb::Slice* end,
+                              const ColumnFamilyType& type = kMetaAndData) = 0;
   virtual Status GetProperty(const std::string& property, uint64_t* out) = 0;
-  virtual Status ScanKeyNum(uint64_t* num) = 0;
+  virtual Status ScanKeyNum(KeyInfo* key_info) = 0;
   virtual Status ScanKeys(const std::string& pattern,
                           std::vector<std::string>* keys) = 0;
 
@@ -54,7 +55,12 @@ class Redis {
   virtual Status Persist(const Slice& key) = 0;
   virtual Status TTL(const Slice& key, int64_t* timestamp) = 0;
 
+  Status SetMaxCacheStatisticKeys(size_t max_cache_statistic_keys);
+  Status SetSmallCompactionThreshold(size_t small_compaction_threshold);
+
  protected:
+  BlackWidow* const bw_;
+  DataType type_;
   LockMgr* lock_mgr_;
   rocksdb::DB* db_;
   rocksdb::WriteOptions default_write_options_;
@@ -65,8 +71,18 @@ class Redis {
   slash::Mutex scan_cursors_mutex_;
   BlackWidow::LRU<std::string, std::string> scan_cursors_store_;
 
-  Status GetScanStartPoint(const Slice& key, const Slice& pattern, int64_t cursor, std::string* start_point);
-  Status StoreScanNextPoint(const Slice& key, const Slice& pattern, int64_t cursor, const std::string& next_point);
+  Status GetScanStartPoint(const Slice& key, const Slice& pattern,
+                           int64_t cursor, std::string* start_point);
+  Status StoreScanNextPoint(const Slice& key, const Slice& pattern,
+                            int64_t cursor, const std::string& next_point);
+
+  // For Statistics
+  slash::Mutex statistics_mutex_;
+  BlackWidow::LRU<std::string, size_t> statistics_store_;
+  size_t small_compaction_threshold_;
+
+  Status UpdateSpecificKeyStatistics(const std::string& key, uint32_t count);
+  Status AddCompactKeyTaskIfNeeded(const std::string& key, uint32_t total);
 };
 
 }  //  namespace blackwidow
